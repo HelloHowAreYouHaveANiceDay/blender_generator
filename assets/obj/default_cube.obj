@@ -1,7 +1,7 @@
 # Blender 4.2.1 LTS
 # www.blender.org
-mtllib cube.mtl
-o twine
+mtllib default_cube.mtl
+o Cube
 v 1.000000 1.000000 -1.000000
 v 1.000000 -1.000000 -1.000000
 v 1.000000 1.000000 1.000000
