@@ -1,18 +1,60 @@
 import blenderproc as bproc
 import argparse
+import glob
+import random
 
 import os
 os.environ['MPLBACKEND'] = 'agg'
 
+ASSETS = "./assets/glb"
 CUBE = "./assets/cube.obj"
 OUTPUT_DIR = "./output"
 OUTPUT_UNPACKED_DIR = "./output_unpacked"
 
 bproc.init()
 
-# load the objects into the scene
-# objs = bproc.loader.load_obj(SCENE)
-objs = bproc.loader.load_obj(CUBE)
+# load 20 random objects from the assets directory
+glb_files = glob.glob(os.path.join(ASSETS, "*.glb"))
+print(f"Found {len(glb_files)} GLB files in {ASSETS}")
+
+# Select up to 20 random GLB files
+selected_files = random.sample(glb_files, min(20, len(glb_files)))
+print(f"Loading {len(selected_files)} random GLB files:")
+
+objs = []
+for i, glb_file in enumerate(selected_files):
+    print(f"  {i+1}. {os.path.basename(glb_file)}")
+    try:
+        # Try to load GLB file using Blender's native import
+        import bpy
+        
+        # Clear selection and import GLB
+        bpy.ops.object.select_all(action='DESELECT')
+        bpy.ops.import_scene.gltf(filepath=glb_file)
+        
+        # Get the newly imported objects
+        loaded_objs = [obj for obj in bpy.context.selected_objects if obj.type == 'MESH']
+        
+        # Convert to BlenderProc objects
+        loaded_mesh_objs = []
+        for blender_obj in loaded_objs:
+            mesh_obj = bproc.types.MeshObject(blender_obj)
+            loaded_mesh_objs.append(mesh_obj)
+        
+        # Position objects randomly in a 3D grid to avoid overlap
+        for obj in loaded_mesh_objs:
+            # Random position in a 4x4x4 grid centered at origin
+            x = (i % 4 - 1.5) * 2  # -3, -1, 1, 3
+            y = ((i // 4) % 4 - 1.5) * 2
+            z = ((i // 16) % 4 - 1.5) * 2
+            obj.set_location([x, y, z])
+        
+        objs.extend(loaded_mesh_objs)
+        print(f"    Successfully loaded {len(loaded_mesh_objs)} objects")
+        
+    except Exception as e:
+        print(f"    Failed to load {os.path.basename(glb_file)}: {e}")
+        continue
 
 
 # define a light and set its location and energy level
@@ -63,96 +105,6 @@ data = bproc.renderer.render()
 # write the data to a .hdf5 container for compatibility with the notebook
 bproc.writer.write_hdf5(OUTPUT_DIR, data)
 
-# Custom function to extract HDF5 data and save as discrete PNGs with metadata
-import h5py
-import json
-import numpy as np
-from PIL import Image
-
-def extract_hdf5_to_pngs(hdf5_dir, output_dir):
-    """Extract HDF5 files and save as PNG images with JSON metadata"""
-    import glob
-    
-    # Create output directory if it doesn't exist
-    os.makedirs(output_dir, exist_ok=True)
-    
-    # Find all HDF5 files
-    hdf5_files = glob.glob(os.path.join(hdf5_dir, "*.hdf5"))
-    
-    for hdf5_file in hdf5_files:
-        frame_idx = os.path.basename(hdf5_file).split('.')[0]
-        
-        with h5py.File(hdf5_file, 'r') as f:
-            metadata = {}
-            
-            # Extract and save each dataset
-            for key in f.keys():
-                data = f[key][()]
-                
-                if key == "colors":
-                    # Save RGB image as PNG
-                    if len(data.shape) == 3:  # RGB image
-                        # Convert to uint8 if needed
-                        if data.dtype != np.uint8:
-                            data = (data * 255).astype(np.uint8)
-                        img = Image.fromarray(data)
-                        img.save(os.path.join(output_dir, f"rgb_{frame_idx}.png"))
-                        metadata[key] = f"rgb_{frame_idx}.png"
-                
-                elif key == "depth":
-                    # Save depth as PNG (scaled to 16-bit)
-                    if len(data.shape) == 2:  # Depth image
-                        # Handle invalid values (NaN, inf) by clipping to valid range
-                        data_clean = np.nan_to_num(data, nan=0.0, posinf=65.535, neginf=0.0)
-                        # Clip to valid range for 16-bit (0-65.535 meters -> 0-65535 mm)
-                        data_clipped = np.clip(data_clean, 0, 65.535)
-                        # Scale depth to 16-bit range
-                        depth_scaled = (data_clipped * 1000).astype(np.uint16)  # Convert to mm
-                        img = Image.fromarray(depth_scaled, mode='I;16')
-                        img.save(os.path.join(output_dir, f"depth_{frame_idx}.png"))
-                        metadata[key] = f"depth_{frame_idx}.png"
-                        metadata[f"{key}_scale"] = 0.001  # Scale factor to convert back to meters
-                
-                elif key == "normals":
-                    # Save normals as PNG
-                    if len(data.shape) == 3:
-                        # Normalize normals to 0-255 range
-                        normals_scaled = ((data + 1) * 127.5).astype(np.uint8)
-                        img = Image.fromarray(normals_scaled)
-                        img.save(os.path.join(output_dir, f"normals_{frame_idx}.png"))
-                        metadata[key] = f"normals_{frame_idx}.png"
-                
-                else:
-                    # For other data types, save metadata only
-                    if isinstance(data, np.ndarray):
-                        if data.size < 100:  # Small arrays, save as list
-                            try:
-                                metadata[key] = data.tolist()
-                            except (ValueError, TypeError):
-                                metadata[key] = f"Array shape: {data.shape}, dtype: {data.dtype}"
-                        else:
-                            metadata[key] = f"Array shape: {data.shape}, dtype: {data.dtype}"
-                    elif isinstance(data, bytes):
-                        # Handle bytes data by converting to string or decoding
-                        try:
-                            metadata[key] = data.decode('utf-8')
-                        except UnicodeDecodeError:
-                            metadata[key] = f"Binary data ({len(data)} bytes)"
-                    else:
-                        try:
-                            # Try to convert to JSON-serializable format
-                            if hasattr(data, 'tolist'):
-                                metadata[key] = data.tolist()
-                            else:
-                                # Test if it's JSON serializable
-                                json.dumps(data)
-                                metadata[key] = data
-                        except (TypeError, ValueError):
-                            metadata[key] = str(data)
-            
-            # Save metadata as JSON
-            with open(os.path.join(output_dir, f"metadata_{frame_idx}.json"), 'w') as json_file:
-                json.dump(metadata, json_file, indent=2)
-
-# Extract HDF5 data to PNGs
+# Extract HDF5 data to PNGs using helper function
+from helpers.hdf5 import extract_hdf5_to_pngs
 extract_hdf5_to_pngs(OUTPUT_DIR, OUTPUT_UNPACKED_DIR)
