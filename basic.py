@@ -2,8 +2,11 @@ import blenderproc as bproc
 import argparse
 import glob
 import random
-
+import math
+import sys
 import os
+
+# Set environment variables
 os.environ['MPLBACKEND'] = 'agg'
 
 ASSETS = "./assets/glb"
@@ -18,7 +21,7 @@ glb_files = glob.glob(os.path.join(ASSETS, "*.glb"))
 print(f"Found {len(glb_files)} GLB files in {ASSETS}")
 
 # Select up to 20 random GLB files
-selected_files = random.sample(glb_files, min(20, len(glb_files)))
+selected_files = random.sample(glb_files, min(50, len(glb_files)))
 print(f"Loading {len(selected_files)} random GLB files:")
 
 objs = []
@@ -41,13 +44,16 @@ for i, glb_file in enumerate(selected_files):
             mesh_obj = bproc.types.MeshObject(blender_obj)
             loaded_mesh_objs.append(mesh_obj)
         
-        # Position objects randomly in a 3D grid to avoid overlap
+        # Position objects randomly above the ground plane for physics simulation
         for obj in loaded_mesh_objs:
-            # Random position in a 4x4x4 grid centered at origin
-            x = (i % 4 - 1.5) * 2  # -3, -1, 1, 3
-            y = ((i // 4) % 4 - 1.5) * 2
-            z = ((i // 16) % 4 - 1.5) * 2
+            # Random position above ground with some spread
+            x = random.uniform(-4, 4)  # Wider spread for more interesting physics
+            y = random.uniform(-4, 4)
+            z = random.uniform(3, 8)   # Start high up for falling simulation
             obj.set_location([x, y, z])
+            
+            # Enable rigid body physics for each object (make them active/falling)
+            obj.enable_rigidbody(active=True, collision_shape="CONVEX_HULL")
         
         objs.extend(loaded_mesh_objs)
         print(f"    Successfully loaded {len(loaded_mesh_objs)} objects")
@@ -55,6 +61,56 @@ for i, glb_file in enumerate(selected_files):
     except Exception as e:
         print(f"    Failed to load {os.path.basename(glb_file)}: {e}")
         continue
+
+# Create a ground plane for objects to fall onto
+print("Creating ground plane for physics simulation...")
+ground_plane = bproc.object.create_primitive("PLANE")
+ground_plane.set_scale([20, 20, 1])  # Much larger plane to catch all falling objects
+ground_plane.set_location([0, 0, 0])  # Place at origin
+ground_plane.enable_rigidbody(active=False)  # Make it passive (static obstacle)
+
+# Create walls around the ground plane to form a bowl/container
+print("Creating walls to contain objects...")
+wall_height = 2.0  # Lower walls so cameras can see over them
+wall_thickness = 0.5
+wall_distance = 10.0  # Distance from center to wall
+
+# North wall
+north_wall = bproc.object.create_primitive("CUBE")
+north_wall.set_scale([wall_distance, wall_thickness, wall_height])
+north_wall.set_location([0, wall_distance, wall_height])
+north_wall.enable_rigidbody(active=False)
+
+# South wall
+south_wall = bproc.object.create_primitive("CUBE")
+south_wall.set_scale([wall_distance, wall_thickness, wall_height])
+south_wall.set_location([0, -wall_distance, wall_height])
+south_wall.enable_rigidbody(active=False)
+
+# East wall
+east_wall = bproc.object.create_primitive("CUBE")
+east_wall.set_scale([wall_thickness, wall_distance, wall_height])
+east_wall.set_location([wall_distance, 0, wall_height])
+east_wall.enable_rigidbody(active=False)
+
+# West wall
+west_wall = bproc.object.create_primitive("CUBE")
+west_wall.set_scale([wall_thickness, wall_distance, wall_height])
+west_wall.set_location([-wall_distance, 0, wall_height])
+west_wall.enable_rigidbody(active=False)
+
+print("Running physics simulation...")
+# Run physics simulation and fix final poses
+bproc.object.simulate_physics_and_fix_final_poses(
+    min_simulation_time=3,   # Simulate for at least 3 seconds
+    max_simulation_time=15,  # Simulate for at most 15 seconds  
+    check_object_interval=0.5,  # Check every 0.5 seconds if objects stopped
+    object_stopped_location_threshold=0.01,  # Movement threshold
+    object_stopped_rotation_threshold=0.01,  # Rotation threshold
+    substeps_per_frame=10,   # Higher accuracy
+    solver_iters=20          # Better stability
+)
+print("Physics simulation complete. Objects settled.")
 
 
 # define a light and set its location and energy level
@@ -67,14 +123,13 @@ light.set_energy(1000)
 bproc.camera.set_resolution(512, 512)
 
 # Generate 5 camera positions that all point to the center of the scene
-import math
 
-# Center of the scene (target point)
-target = [0, 0, 0]
+# Center of the scene (target point) - now focusing on ground level
+target = [0, 0, 0.5]  # Slightly above ground to better frame the objects
 
 # Generate 5 camera positions in a circle around the target
-radius = 5.0  # Distance from center
-height = 2.0  # Height above the target
+radius = 7.0   # Move cameras inside the bowl walls (walls are at 10 units)
+height = 8.0   # Much higher up to look down into the bowl from above
 
 for i in range(5):
     # Calculate angle for circular positioning
@@ -106,5 +161,6 @@ data = bproc.renderer.render()
 bproc.writer.write_hdf5(OUTPUT_DIR, data)
 
 # Extract HDF5 data to PNGs using helper function
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from helpers.hdf5 import extract_hdf5_to_pngs
 extract_hdf5_to_pngs(OUTPUT_DIR, OUTPUT_UNPACKED_DIR)
